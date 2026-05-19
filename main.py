@@ -1,3 +1,5 @@
+import http.server
+import threading
 import os
 import httpx
 import asyncio
@@ -116,7 +118,24 @@ async def handle_message(message: types.Message):
         await typing.edit_text("⚠️ Ошибка ИИ. Попробуй позже")
         print(f"AI Error: {e}")
 
+class DummyHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+    def log_message(self, format, *args):
+        pass
+
 async def main():
+    # Render требует, чтобы приложение слушало на определенном порту
+    port = int(os.environ.get("PORT", 10000))
+    
+    # Запускаем мини-сервер в фоне, чтобы Render думал, что всё ок
+    server = http.server.HTTPServer(('0.0.0.0', port), DummyHandler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.daemon = True
+    thread.start()
+    print(f"Bot is running on port {port}")
+
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
