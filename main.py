@@ -53,9 +53,11 @@ async def get_ai_reply(user_id: str, message: str, user_name: str) -> str:
             },
             json={
                 "model": "llama-3.3-70b-versatile",
-                "messages": chat_history[user_id],
-                "max_tokens": 512,
-                "temperature": 1.0  # Креативность по максимуму
+                "temperature": 0.75,   # креатив, но под контролем
+                "top_p": 0.9,          # отсечь явный бред
+                "frequency_penalty": 0.25,  # лёгкий штраф за повторы
+                "presence_penalty": 0.15,   # чуть больше разнообразия
+                "max_tokens": 512
             }
         )
         data = resp.json()
@@ -94,24 +96,32 @@ async def handle_message(message: types.Message):
     if not message.text or message.from_user.is_bot:
         return
 
-    # --- НОВАЯ ЛОГИКА ДЛЯ ГРУПП ---
+    # --- ЛОГИКА ДЛЯ ГРУПП ---
     if message.chat.type != "private":
-        # Замени 'my_ai_bot' на username своего бота (без знака @)
-        # Пример: если бот @SuperBot, пишем SuperBot
-        if "боб" not in message.text:
-            return  # Если бота не упомянули — молчим и выходим
-    # -----------------------------
+        text_lower = message.text.lower()
+        
+        # 1. Ответ на сообщение бота
+        is_reply_to_bot = (message.reply_to_message and 
+                           message.reply_to_message.from_user.id == bot.id)
+        # 2. Упоминание @username
+        has_mention = bot.username and f"@{bot.username.lower()}" in text_lower
+        # 3. Имя "боб" в любом регистре
+        has_name = "боб" in text_lower or "bob" in text_lower
 
-    # Если прошли проверку (или это личка) — обрабатываем
+        if not (is_reply_to_bot or has_mention or has_name):
+            return  # Молчим, если не обратились к боту
+    # -----------------------
+
     typing = await message.answer("Печатает...")
     try:
-        # Используем chat.id для группы, чтобы бот помнил контекст всей беседы
+        # ✅ Правильно определяем target_id
         target_id = str(message.chat.id) if message.chat.type != "private" else str(message.from_user.id)
         
+        # ✅ Передаём target_id, а не from_user.id!
         reply = await get_ai_reply(
-            str(message.from_user.id), 
-            message.text, 
-            message.from_user.first_name # Передаем имя из сообщения
+            target_id,  # ← Было: str(message.from_user.id) — это баг!
+            message.text,
+            message.from_user.first_name
         )
         await typing.edit_text(reply)
     except Exception as e:
@@ -126,16 +136,16 @@ class DummyHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 async def main():
-    # Render требует, чтобы приложение слушало на определенном порту
     port = int(os.environ.get("PORT", 10000))
-    
-    # Запускаем мини-сервер в фоне, чтобы Render думал, что всё ок
     server = http.server.HTTPServer(('0.0.0.0', port), DummyHandler)
     thread = threading.Thread(target=server.serve_forever)
     thread.daemon = True
     thread.start()
     print(f"Bot is running on port {port}")
 
+    
+    await bot.get_me()
+    
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
