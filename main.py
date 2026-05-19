@@ -26,24 +26,16 @@ def get_smart_prompt(user_name: str):
         f"Не будь официозным. Отвечай только на русском."
     )
 
-async def get_ai_reply(user_id: str, message: str, user_name: str) -> str:
-    # Если это первый раз общаемся — создаем историю
+async def get_ai_reply(user_id: str, message_text: str, user_name: str) -> str:
     if user_id not in chat_history:
-        # Динамический промт с именем!
-        chat_history[user_id] = [
-            {"role": "system", "content": get_smart_prompt(user_name)}
-        ]
+        chat_history[user_id] = [{"role": "system", "content": get_smart_prompt(user_name)}]
+        
+    chat_history[user_id].append({"role": "user", "content": message_text})
     
-    # Добавляем сообщение пользователя
-    chat_history[user_id].append({"role": "user", "content": message})
-    
-    # Ограничиваем контекст (последние 10 сообщений + системный промт)
-    # Это экономит токены и держит фокус на текущей теме
-    if len(chat_history[user_id]) > 12: 
-        # Сохраняем системный промт (индекс 0) и последние 10 сообщений
+    # Ограничиваем контекст (системный промт + последние 10 сообщений)
+    if len(chat_history[user_id]) > 12:
         chat_history[user_id] = [chat_history[user_id][0]] + chat_history[user_id][-10:]
-
-    # Отправляем запрос к ИИ
+        
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
@@ -53,17 +45,25 @@ async def get_ai_reply(user_id: str, message: str, user_name: str) -> str:
             },
             json={
                 "model": "llama-3.3-70b-versatile",
-                "temperature": 0.75,   # креатив, но под контролем
-                "top_p": 0.9,          # отсечь явный бред
-                "frequency_penalty": 0.25,  # лёгкий штраф за повторы
-                "presence_penalty": 0.15,   # чуть больше разнообразия
-                "max_tokens": 512
+                "messages": chat_history[user_id],
+                "max_tokens": 512,
+                "temperature": 0.7
             }
         )
-        data = resp.json()
-        reply = data["choices"][0]["message"]["content"]
         
-        # Запоминаем ответ бота
+        # ✅ Безопасная обработка ответов Groq
+        if resp.status_code != 200:
+            try:
+                error_msg = resp.json().get("error", {}).get("message", "Unknown error")
+            except:
+                error_msg = resp.text[:100]
+            raise Exception(f"Groq {resp.status_code}: {error_msg}")
+            
+        data = resp.json()
+        if "choices" not in data or not data["choices"]:
+            raise Exception("Пустой ответ от ИИ")
+            
+        reply = data["choices"][0]["message"]["content"]
         chat_history[user_id].append({"role": "assistant", "content": reply})
         return reply
 
@@ -91,19 +91,20 @@ async def generate_image(message: types.Message):
 
 
 @dp.message()
-async def handle_message(message: types.Message):
-    # Игнорируем, если это не текст или это сообщение от бота
-    if not message.text or message.from_user.is_bot:
+async def handle_message(message: types.Message, bot: Bot):
+    # Безопасное получение текста (работает с фото+подпись)
+    msg_text = message.text or message.caption or ""
+    if not msg_text.strip() or message.from_user.is_bot:
         return
 
     # --- ЛОГИКА ДЛЯ ГРУПП ---
     if message.chat.type != "private":
-        text_lower = message.text.lower()
+        text_lower = msg_text.lower()
         
-        # 1. Ответ на сообщение бота
+        # 1. Ответ реплаем на сообщение бота
         is_reply_to_bot = (message.reply_to_message and 
                            message.reply_to_message.from_user.id == bot.id)
-        # 2. Упоминание @username
+        # 2. Упоминание через @username
         has_mention = bot.username and f"@{bot.username.lower()}" in text_lower
         # 3. Имя "боб" в любом регистре
         has_name = "боб" in text_lower or "bob" in text_lower
@@ -112,21 +113,17 @@ async def handle_message(message: types.Message):
             return  # Молчим, если не обратились к боту
     # -----------------------
 
+    # ✅ Правильный ID: для группы = chat.id, для лички = user.id
+    target_id = str(message.chat.id) if message.chat.type != "private" else str(message.from_user.id)
+
     typing = await message.answer("Печатает...")
     try:
-        # ✅ Правильно определяем target_id
-        target_id = str(message.chat.id) if message.chat.type != "private" else str(message.from_user.id)
-        
         # ✅ Передаём target_id, а не from_user.id!
-        reply = await get_ai_reply(
-            target_id,  # ← Было: str(message.from_user.id) — это баг!
-            message.text,
-            message.from_user.first_name
-        )
+        reply = await get_ai_reply(target_id, msg_text, message.from_user.first_name)
         await typing.edit_text(reply)
     except Exception as e:
-        await typing.edit_text("⚠️ Ошибка ИИ. Попробуй позже")
-        print(f"AI Error: {e}")
+        print(f"🔴 AI Error: {e}")
+        await typing.edit_text(f"⚠️ Ошибка ИИ: {str(e)[:40]}...")
 
 class DummyHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -143,9 +140,8 @@ async def main():
     thread.start()
     print(f"Bot is running on port {port}")
 
-    
+    # ✅ Загружаем данные бота ДО запуска поллинга
     await bot.get_me()
-    
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
