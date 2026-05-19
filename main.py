@@ -98,7 +98,7 @@ async def handle_message(message: types.Message):
     if message.chat.type != "private":
         # Замени 'my_ai_bot' на username своего бота (без знака @)
         # Пример: если бот @SuperBot, пишем SuperBot
-        if "@my_ai_bot" not in message.text:
+        if "боб" not in message.text:
             return  # Если бота не упомянули — молчим и выходим
     # -----------------------------
 
